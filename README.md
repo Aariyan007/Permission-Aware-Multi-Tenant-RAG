@@ -93,7 +93,7 @@ Full threat table and the limits of this model: [docs/SECURITY_MODEL.md](docs/SE
 Needs the Postgres from `docker compose up -d db` (override with `TEST_PG`).
 
 ```bash
-uv run pytest -q          # 36 tests, ~3 s
+uv run pytest -q          # 65 tests, ~11 s
 uv run ruff check . && uv run mypy app
 ```
 
@@ -105,25 +105,26 @@ The **leakage suite** ([tests/leakage/](tests/leakage/test_isolation.py)) seeds 
 4. Raw SQL as `rag_app` with no identity set returns 0 rows from every table; it is not a superuser and cannot read password hashes; a viewer's writes are rejected; cross-tenant foreign keys are refused.
 5. Prompt-injection queries, including a malicious document, gain nothing.
 6. A randomized property test (300 random user x query pairs, fixed seed) checks results are always a subset of what an independent oracle allows.
-7. Positive controls: users do find everything they may see, so a pass cannot come from "returns nothing".
+7. Positive controls and completeness: users find everything they may see, for several questions and `top_k` values, **next to a 4,000-chunk neighbouring tenant**, so a pass cannot come from "returns nothing" or from a small tenant being crowded out of the vector index.
+8. The same isolation and completeness checks with the ANN path forced on.
 
 **The tests can fail.** I mutation-checked them: removing the group check from the `chunks` policy, or the tenant check, makes the suite fail. Finding worth knowing: `/query` also joins `documents`, which has its own RLS, so the API-level tests alone did not notice a broken `chunks` policy (two policy layers); the raw-SQL tests pin the `chunks` policy directly.
 
 ## Benchmark
 
-`uv run python scripts/bench.py` on a laptop, Docker Postgres, hash embeddings, extractive generator (no network): ~3,000 chunks in one tenant, one third restricted, queried as a user outside the group.
+`uv run python scripts/bench.py [chunks] [queries]` on a laptop: Docker Postgres, hash embeddings, extractive generator (no network). One tenant, a third of its chunks restricted, queried as a user outside the group.
 
-| Metric | Result |
-|---|---|
-| `/query` p50 / p95 | 3.5 ms / 9.5 ms (300 queries, end to end through the API) |
-| Restricted chunks leaked | 0 |
+| Tenant size | Retrieval path | `/query` p50 / p95 | Restricted chunks leaked |
+|---|---|---|---|
+| ~3,000 chunks | exact scan | 5.3 ms / 7.1 ms | 0 |
+| ~20,000 chunks | HNSW (ANN) | 5.6 ms / 7.0 ms | 0 |
 
-These numbers exclude real embedding and LLM latency, and the dataset is small. Treat them as a sanity check, not a scale claim.
+300 queries each, end to end through the API. These exclude real embedding and LLM latency, and the dataset is small. Treat them as a sanity check, not a scale claim.
 
 ## Design notes and known limits
 
 - **Trust boundary:** the database trusts the API to set the identity from a verified JWT. RLS protects against bugs in queries (a forgotten filter, a bad join), not against a compromised API process that sets someone else's identity.
-- **HNSW + filters:** RLS filters after the index returns candidates, which can under-return. Each transaction sets `hnsw.iterative_scan = 'strict_order'` so pgvector keeps scanning until it has `k` visible rows.
+- **HNSW + filters (a bug I hit and fixed):** RLS filters *after* the HNSW graph walk returns candidates. Next to a 3,000-chunk tenant, a 3-chunk tenant got **zero results** from the index, and with `top_k=1` it silently got the wrong chunk. pgvector's iterative scan and a wider `ef_search` were not enough. Fix in [app/api/query.py](app/api/query.py): tenants up to `EXACT_SEARCH_MAX_CHUNKS` (default 5,000) are searched exactly (index disabled, RLS still applies); larger tenants use ANN, with an exact rerun if ANN returns fewer than `k` rows. Prometheus counter `rag_search_mode_total{mode}` shows which path ran. Known remaining gap: a large tenant's restricted user who sees few chunks gets correct but slower results via the fallback.
 - **Rate limiting** is per-tenant, in process memory (fine for one replica; use Redis to share across replicas).
 - **Migrations** are plain SQL files applied in order by `python -m app.migrate` (not Alembic): RLS policies are SQL, so SQL files stay readable.
 - **Offline embedder** is a bag-of-words hash: good for tests and demos, much weaker than a real model. Use Voyage for real retrieval quality.

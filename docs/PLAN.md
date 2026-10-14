@@ -101,3 +101,4 @@ Seed 3 tenants × users in different groups × documents with planted unique "ca
 - Jaeger receives OTLP directly (no separate collector).
 - Per-tenant rate limit is in-memory, not Postgres.
 - Added: composite tenant foreign keys, column-level grant hiding `password_hash`, `SECURITY DEFINER` helpers to avoid RLS policy cycles.
+- Retrieval routes by tenant size (exact scan for small tenants, HNSW + exact fallback for large) after a recall bug found in manual testing.

@@ -12,7 +12,9 @@ import httpx
 
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 3000
 Q = int(sys.argv[2]) if len(sys.argv) > 2 else 300
-BASE, PW = "http://localhost:8000", "password-123"
+import os
+
+BASE, PW = os.environ.get("BENCH_BASE", "http://localhost:8000"), "password-123"
 VOCAB = [f"term{i}" for i in range(400)]
 
 
