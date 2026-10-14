@@ -41,6 +41,27 @@ async def test_users_do_find_what_they_may_see(world):
                 assert found == can_see(u, t, k), f"{u.email} {t}:{k} found={found}"
 
 
+# completeness: with a huge neighbouring tenant in the same index, nothing visible may go missing
+COMPLETENESS_QUERIES = [
+    "what are the salary bands",
+    "completely unrelated generic question about nothing in particular",
+    "term1 term7 term42 term99 term120 term333",
+    "policy",
+    "who is allowed to see this",
+]
+
+
+@pytest.mark.parametrize("top_k", [1, 2, 3, 5, 20])
+@pytest.mark.parametrize("question", COMPLETENESS_QUERIES)
+async def test_retrieval_is_complete_next_to_a_huge_tenant(world, question, top_k):
+    for u in world.users.values():
+        visible = {f"{u.tenant}:{kind}" for kind in KINDS if can_see(u, u.tenant, kind)}
+        res = await ask(world, u, question, top_k=top_k)
+        got = [world.chunk_owner[s["chunk_id"]] for s in res["sources"]]
+        assert len(got) == min(top_k, len(visible)), f"{u.email} {question!r} k={top_k}: got {len(got)} of {len(visible)} visible"
+        assert set(got) <= visible
+
+
 # 2 ─ cross-group
 async def test_no_cross_group_leak(world):
     for t in "abc":
@@ -171,3 +192,32 @@ async def test_property_results_never_exceed_oracle(world):
         allowed = visible_keys(world, u)
         for s in res["sources"]:
             assert world.chunk_owner[s["chunk_id"]] in allowed, (u.email, words, s["snippet"])
+
+
+# the ANN path (used for big tenants) must satisfy the same guarantees; force it by shrinking the threshold
+@pytest.fixture
+def force_ann(world):
+    original = world.settings.exact_search_max_chunks
+    world.settings.exact_search_max_chunks = 0  # every tenant now counts as "big"
+    yield
+    world.settings.exact_search_max_chunks = original
+
+
+@pytest.mark.parametrize("top_k", [1, 3, 20])
+async def test_ann_path_is_isolated_and_complete(world, force_ann, top_k):
+    for u in world.users.values():
+        visible = {f"{u.tenant}:{kind}" for kind in KINDS if can_see(u, u.tenant, kind)}
+        for question in COMPLETENESS_QUERIES[:3]:
+            res = await ask(world, u, question, top_k=top_k)
+            got = [world.chunk_owner[s["chunk_id"]] for s in res["sources"]]
+            assert set(got) <= visible, (u.email, got)  # isolation
+            assert len(got) == min(top_k, len(visible)), (u.email, question, top_k, len(got))  # completeness via fallback
+
+
+async def test_ann_serves_a_genuinely_large_tenant(world, force_ann):
+    noise = world.users.get("n:admin")
+    assert noise is None  # not registered in the oracle; log in directly
+    r = await world.client.post("/auth/login", json={"email": "admin@noise.test", "password": "password-123"})
+    headers = {"Authorization": "Bearer " + r.json()["access_token"]}
+    res = await world.client.post("/query", headers=headers, json={"question": "term1 term7 term42", "top_k": 10})
+    assert res.status_code == 200 and len(res.json()["sources"]) == 10

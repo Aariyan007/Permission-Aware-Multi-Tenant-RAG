@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     llm_model: str = "claude-sonnet-5-5"
 
+    exact_search_max_chunks: int = 5000  # tenants at or below this are searched exactly, not via ANN
     rate_limit_per_minute: int = 120  # per tenant
     otel_endpoint: str | None = None  # e.g. http://jaeger:4318
 

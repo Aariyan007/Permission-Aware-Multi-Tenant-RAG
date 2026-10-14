@@ -17,6 +17,7 @@ REQUESTS = Counter("rag_requests_total", "Requests", ["route", "tenant"])
 CHUNKS_RETRIEVED = Histogram("rag_chunks_retrieved", "Chunks returned per query",
                              buckets=(0, 1, 2, 3, 5, 8, 13, 21))
 LLM_TOKENS = Counter("rag_llm_tokens_total", "LLM tokens", ["tenant", "kind"])
+SEARCH_MODE = Counter("rag_search_mode_total", "Retrieval strategy used", ["mode"])
 RATE_LIMITED = Counter("rag_rate_limited_total", "429 responses", ["tenant"])
 
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")

@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import get_pool
 from app.db import Principal, tenant_tx, vec_literal
-from app.observability import CHUNKS_RETRIEVED, LLM_TOKENS, REQUESTS, stage
+from app.observability import CHUNKS_RETRIEVED, LLM_TOKENS, REQUESTS, SEARCH_MODE, stage
 from app.ratelimit import enforce_rate_limit
 
 router = APIRouter(tags=["query"])
@@ -22,6 +22,35 @@ ORDER BY t.dist
 """
 
 
+async def search(c, vec: str, k: int, exact_max: int) -> list:
+    """Pick the retrieval strategy by tenant size.
+
+    HNSW is a graph walk whose candidates are filtered by RLS afterwards. A small tenant sharing
+    the index with a big one can lose recall (the walk never reaches its few chunks), silently.
+    So tenants up to `exact_max` chunks are searched exactly (milliseconds at that size); only
+    larger tenants use ANN, and if ANN under-returns we rerun exactly as a safety net.
+    The explicit tenant predicate in the size probe is a planner hint; RLS still enforces it."""
+    probe = await c.fetchval(
+        "SELECT count(*) FROM (SELECT 1 FROM chunks WHERE tenant_id = app_tenant() LIMIT $1) s", exact_max + 1)
+    if probe <= exact_max:
+        SEARCH_MODE.labels("exact_small_tenant").inc()
+        return await _exact(c, vec, k)
+    rows = await c.fetch(SEARCH_SQL, vec, k)
+    if len(rows) < k:
+        SEARCH_MODE.labels("exact_fallback").inc()
+        return await _exact(c, vec, k)
+    SEARCH_MODE.labels("ann").inc()
+    return rows
+
+
+async def _exact(c, vec: str, k: int) -> list:
+    await c.execute("SET LOCAL enable_indexscan = off")  # HNSW is an index scan: planner now scans exactly
+    try:
+        return await c.fetch(SEARCH_SQL, vec, k)
+    finally:
+        await c.execute("RESET enable_indexscan")
+
+
 class QueryIn(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     top_k: int = Field(5, ge=1, le=20)
@@ -35,7 +64,7 @@ async def query(body: QueryIn, request: Request, p: Principal = Depends(enforce_
         [qvec] = await request.app.state.embedder.embed([body.question])
     async with tenant_tx(pool, p) as c:
         with stage("retrieve", tid) as span:
-            rows = await c.fetch(SEARCH_SQL, vec_literal(qvec), body.top_k)
+            rows = await search(c, vec_literal(qvec), body.top_k, request.app.state.settings.exact_search_max_chunks)
             span.set_attribute("chunks.count", len(rows))
         CHUNKS_RETRIEVED.observe(len(rows))
         await c.execute(

@@ -74,6 +74,7 @@ async def world():
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
             w = World(client, settings)
             await _seed(w)
+            await _seed_noisy_neighbour(w)
             yield w
 
 
@@ -132,3 +133,33 @@ async def ask(w: World, u: UserCtx, question: str, top_k: int = 20) -> dict:
     r = await w.client.post("/query", headers=u.headers, json={"question": question, "top_k": top_k})
     assert r.status_code == 200, r.text
     return r.json()
+
+
+async def _seed_noisy_neighbour(w: World, n_chunks: int = 4000) -> None:
+    """A large tenant with unrelated text. Regression guard: an ANN index shared by all tenants
+    must still find a small tenant's few chunks (graph search + post-filter can miss them)."""
+    import random
+
+    from app.db import vec_literal
+    from app.rag.embedder import HashEmbedder
+
+    c = w.client
+    r = await c.post("/tenants", headers={"X-Bootstrap-Key": BOOT},
+                     json={"name": "noise", "admin_email": "admin@noise.test", "admin_password": "password-123"})
+    assert r.status_code == 201, r.text
+    noise = UserCtx("admin@noise.test", "password-123", "n", "admin", set(), id=r.json()["admin_user_id"])
+    await login(w, noise)
+    r = await c.post("/documents", headers=noise.headers, data={"title": "seed", "text": "seed document"})
+    doc_id = r.json()["id"]
+    rng, emb = random.Random(99), HashEmbedder(w.settings.embed_dim)
+    vocab = [f"term{i}" for i in range(400)]
+    texts = [" ".join(rng.choices(vocab, k=170)) for _ in range(n_chunks)]
+    vecs = await emb.embed(texts)
+    conn = await asyncpg.connect(w.settings.admin_database_url)
+    try:
+        await conn.executemany(
+            "INSERT INTO chunks (tenant_id, document_id, owner_id, chunk_index, content, embedding) "
+            "SELECT tenant_id, id, created_by, $1, $2, $3::vector FROM documents WHERE id = $4",
+            [(i + 1, t, vec_literal(v), doc_id) for i, (t, v) in enumerate(zip(texts, vecs))])
+    finally:
+        await conn.close()
