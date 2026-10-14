@@ -19,6 +19,12 @@ No user can ever retrieve a chunk they are not allowed to see, even if the appli
 2. **API to Postgres:** each request runs in one transaction that does `SET LOCAL app.tenant_id / app.user_id`.
 3. **Postgres to LLM:** only RLS-approved chunks are placed in the prompt.
 
+## Limits of the model
+- **The database trusts the API to set the caller's identity.** The API derives `app.tenant_id` / `app.user_id` from a signature-verified JWT in exactly one place (`app/db.py: tenant_tx`). RLS protects against *query bugs* (a missing filter, a wrong join). It does not protect against a compromised API process that sets someone else's identity.
+- **Two layers on retrieval.** `/query` joins `documents`, which has its own RLS policy, in addition to the `chunks` policy. Raw-SQL tests pin the `chunks` policy on its own.
+- **Role changes use the database's view of the role.** The JWT role claim is advisory; policies call `app_role()`, which reads the current role from `users`.
+- **Admins are tenant-wide trusted.** They see every document in their tenant by design.
+
 ## Out of scope for v1
 - Encryption at rest per tenant
 - Field-level redaction inside a chunk

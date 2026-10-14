@@ -91,3 +91,13 @@ Seed 3 tenants × users in different groups × documents with planted unique "ca
 - Embeddings: Voyage (`voyage-3`), with a local sentence-transformers fallback so tests run without API keys.
 - LLM: Claude `claude-sonnet-5-5` via the Anthropic SDK. Tests use a fake LLM.
 - Package manager: `uv`.
+
+
+## Deviations from this plan (as built)
+- Plain SQL migrations (`migrations/*.sql` + `python -m app.migrate`) instead of Alembic.
+- asyncpg directly instead of SQLAlchemy.
+- Offline `HashEmbedder` instead of sentence-transformers; Voyage called over HTTP.
+- Randomized seeded property test instead of `hypothesis`.
+- Jaeger receives OTLP directly (no separate collector).
+- Per-tenant rate limit is in-memory, not Postgres.
+- Added: composite tenant foreign keys, column-level grant hiding `password_hash`, `SECURITY DEFINER` helpers to avoid RLS policy cycles.
