@@ -129,8 +129,11 @@ async def _seed(w: World) -> None:
     await conn.close()
 
 
-async def ask(w: World, u: UserCtx, question: str, top_k: int = 20) -> dict:
-    r = await w.client.post("/query", headers=u.headers, json={"question": question, "top_k": top_k})
+MODES = ("vector", "keyword", "hybrid")
+
+
+async def ask(w: World, u: UserCtx, question: str, top_k: int = 20, mode: str = "hybrid") -> dict:
+    r = await w.client.post("/query", headers=u.headers, json={"question": question, "top_k": top_k, "mode": mode})
     assert r.status_code == 200, r.text
     return r.json()
 

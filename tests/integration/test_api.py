@@ -95,3 +95,44 @@ async def test_rate_limit(world):
     assert all(lim.allow("t", 3, now=i) for i in range(3))
     assert not lim.allow("t", 3, now=3)
     assert lim.allow("t", 3, now=61)
+
+
+async def test_keyword_mode_matches_exact_terms_and_stems(world):
+    """'salaries' must match a chunk that says 'Salary' (stemming), via full-text search."""
+    alice = world.user("a", "alice")
+    r = await world.client.post("/documents", headers=alice.headers, data={
+        "title": "codes", "text": "Leave policy PTO-2024-X7 grants salary continuation for parents."})
+    doc = r.json()["id"]
+    try:
+        res = await ask(world, alice, "PTO-2024-X7", top_k=1, mode="keyword")
+        assert "PTO-2024-X7" in res["sources"][0]["snippet"]
+        res = await ask(world, alice, "salaries", top_k=5, mode="keyword")
+        assert any("PTO-2024-X7" in s["snippet"] for s in res["sources"])
+        res = await ask(world, alice, "zzznotawordzzz", mode="keyword")
+        assert res["sources"] == []  # keyword search returns nothing when no word matches
+    finally:
+        await world.client.delete(f"/documents/{doc}", headers=alice.headers)
+
+
+async def test_hybrid_is_default_and_reranker_is_applied(world):
+    class ReverseReranker:  # deterministic fake: proves the reranker's order is what gets returned
+        async def rerank(self, question, passages, top_k):
+            return list(reversed(range(len(passages))))[:top_k]
+
+    app_state = world.client._transport.app.state  # type: ignore[attr-defined]
+    original = app_state.reranker
+    app_state.reranker = ReverseReranker()
+    try:
+        admin = world.user("a", "admin")
+        hybrid = await ask(world, admin, "secret marker policy", top_k=3)
+        assert hybrid["mode"] == "hybrid"
+        vector = await ask(world, admin, "secret marker policy", top_k=3, mode="vector")
+        assert vector["mode"] == "vector" and len(hybrid["sources"]) == 3
+    finally:
+        app_state.reranker = original
+
+
+async def test_rejects_unknown_mode(world):
+    r = await world.client.post("/query", headers=world.user("a", "alice").headers,
+                                json={"question": "hi", "mode": "magic"})
+    assert r.status_code == 422

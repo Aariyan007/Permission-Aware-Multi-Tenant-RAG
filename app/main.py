@@ -10,11 +10,12 @@ from app.config import Settings, get_settings
 from app.db import create_pool
 from app.rag.embedder import Embedder, build_embedder
 from app.rag.generator import Generator, build_generator
+from app.rag.reranker import Reranker, build_reranker
 from app.ratelimit import TenantRateLimiter
 
 
 def create_app(settings: Settings | None = None, embedder: Embedder | None = None,
-               generator: Generator | None = None) -> FastAPI:
+               generator: Generator | None = None, reranker: Reranker | None = None) -> FastAPI:
     settings = settings or get_settings()
 
     @asynccontextmanager
@@ -27,6 +28,7 @@ def create_app(settings: Settings | None = None, embedder: Embedder | None = Non
     app.state.settings = settings
     app.state.embedder = embedder or build_embedder(settings)
     app.state.generator = generator or build_generator(settings)
+    app.state.reranker = reranker or build_reranker(settings)
     app.state.limiter = TenantRateLimiter()
     app.dependency_overrides[get_settings] = lambda: settings
     observability.install(app, settings)

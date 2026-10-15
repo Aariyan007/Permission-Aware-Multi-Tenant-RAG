@@ -56,8 +56,9 @@ client --JWT--> FastAPI --> auth (user_id, tenant_id from signed token)
                    |- POST /documents -> chunk -> embed -> store (chunks carry their ACL)
                    |- POST /query     -> embed question
                    |                     -> BEGIN; set_config('app.tenant_id'/'app.user_id', local)
-                   |                     -> SELECT ... ORDER BY embedding <=> $q LIMIT k   (no WHERE on tenant/ACL!)
-                   |                        Postgres RLS adds the tenant + ACL filter
+                   |                     -> vector search  (embedding <=> $q)      } no WHERE on tenant/ACL:
+                   |                     -> keyword search (full-text, stemmed)    } RLS filters both
+                   |                     -> merge by Reciprocal Rank Fusion -> rerank (Voyage) -> top k
                    |                     -> LLM answers with [n] citations; audit row written
                    '- admin routes    -> users, groups, memberships, document access
 ```
@@ -76,9 +77,21 @@ Key code: [migrations/001_init.sql](migrations/001_init.sql) (schema and RLS pol
 | `POST /documents` | admin, member | ingest text or a file (txt, md, pdf); members may only share with groups they belong to |
 | `GET /documents`, `DELETE /documents/{id}` | any / owner or admin | list what you may see, delete |
 | `PUT /documents/{id}/access` | admin | set visibility and ACL; chunk ACLs re-sync by trigger |
-| `POST /query` | any role | permission-filtered retrieval + answer with citations |
+| `POST /query` | any role | permission-filtered retrieval + answer with citations; `mode`: `hybrid` (default), `vector` or `keyword` |
 | `GET /audit` | admin | who asked what and which chunks were returned |
 | `GET /metrics`, `GET /health` | open | Prometheus, liveness |
+
+## Hybrid search
+
+Vector search matches **meaning** but is weak on exact codes and word forms; keyword search (Postgres full-text) matches **exact, stemmed words** but not synonyms. `hybrid` mode runs both, merges the two rankings with **Reciprocal Rank Fusion** (each chunk scores `1/(60 + position)` per list), then a **reranker** re-orders the shortlist. Both searches run in the same RLS-scoped transaction, and the leakage suite runs in all three modes.
+
+Same question, same data, on the demo stack (offline embedder):
+
+| Question | `vector` | `keyword` | `hybrid` |
+|---|---|---|---|
+| "what are the salaries" | runbook, handbook (missed) | Salary bands | **Salary bands** first |
+
+The offline embedder treats "salaries" and "salary" as unrelated words; full-text search stems both to `salari`. With a real embedding model the gap is smaller but appears on exact codes (e.g. `PTO-2024-X7`). Measuring this properly is the next step (retrieval evaluation).
 
 ## Security model
 
@@ -95,7 +108,7 @@ Full threat table and the limits of this model: [docs/SECURITY_MODEL.md](docs/SE
 Needs the Postgres from `docker compose up -d db` (override with `TEST_PG`).
 
 ```bash
-uv run pytest -q          # 65 tests, ~11 s
+uv run pytest -q          # 85 tests, ~25 s
 uv run ruff check . && uv run mypy app
 ```
 
@@ -109,6 +122,7 @@ The **leakage suite** ([tests/leakage/](tests/leakage/test_isolation.py)) seeds 
 6. A randomized property test (300 random user x query pairs, fixed seed) checks results are always a subset of what an independent oracle allows.
 7. Positive controls and completeness: users find everything they may see, for several questions and `top_k` values, **next to a 4,000-chunk neighbouring tenant**, so a pass cannot come from "returns nothing" or from a small tenant being crowded out of the vector index.
 8. The same isolation and completeness checks with the ANN path forced on.
+9. Cross-tenant, cross-group, prompt-injection and property tests run in all three search modes (vector, keyword, hybrid).
 
 **The tests can fail.** I mutation-checked them: removing the group check from the `chunks` policy, or the tenant check, makes the suite fail. Finding worth knowing: `/query` also joins `documents`, which has its own RLS, so the API-level tests alone did not notice a broken `chunks` policy (two policy layers); the raw-SQL tests pin the `chunks` policy directly.
 

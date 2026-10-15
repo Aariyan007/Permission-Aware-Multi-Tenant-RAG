@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     embed_dim: int = 256  # must match vector(256) in migrations
     voyage_api_key: str | None = None
     voyage_model: str = "voyage-3.5"
+    rerank_enabled: bool = True
+    rerank_model: str = "rerank-2.5"
+    search_candidates: int = 20  # how many each retriever returns before fusion / reranking
     anthropic_api_key: str | None = None
     llm_model: str = "claude-sonnet-5-5"
 

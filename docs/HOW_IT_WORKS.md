@@ -121,7 +121,34 @@ The AI **never sees** text the person may not read, so tricks like "ignore your 
 
 **Key idea:** the same SQL query returns different rows depending on who asks, because the database applies the rules, not our Python code.
 
-## 6. How we prove it: leak tests
+## 6. Hybrid search: two searches are better than one
+
+**Before:** only vector search (meaning). Great for "how much vacation?" finding "25 days of paid leave". Weak on exact words: codes like `PTO-2024-X7`, levels like `L4`, or word forms.
+
+**Keyword search** (Postgres full-text) is a librarian with an index card per word. It cuts words to their root ("salaries" and "salary" both become `salari`) and ignores filler words.
+
+| Question | Vector (meaning) | Keyword (exact words) |
+|---|---|---|
+| "vacation" vs a doc saying "paid leave" | finds it | no shared words |
+| "policy PTO-2024-X7" | a code means nothing | exact match |
+
+**After (hybrid):** ask both, then merge the two ranked lists with **Reciprocal Rank Fusion**. Each chunk gets `1 / (60 + position)` points from each list it appears in, so chunks both searches like rise to the top. We merge by position, not score, because the two searches score in different units (like kilometres vs kilograms).
+
+**Reranker:** a smarter AI model reads the question and each shortlisted chunk *together* and re-orders them. It's like hiring: the fast searches filter 1000 resumes to 20, and the reranker interviews those 20.
+
+```
+before:  question -> vector search -> top 5 -> LLM
+after:   question -> vector search  -+
+                  -> keyword search -+-> merge (RRF) -> rerank -> top 5 -> LLM
+```
+
+Real result on the demo data: "what are the salaries" with vector-only missed the salary document; keyword and hybrid found it first.
+
+**Security is unchanged:** both searches run inside the same name-tagged transaction, so the database guard filters both. The leak tests run in all three modes to prove it.
+
+Try it: `POST /query` with `"mode": "vector"`, `"keyword"` or `"hybrid"`.
+
+## 6b. How we prove it: leak tests
 
 The tests plant unique fake words (**canaries**) such as `canaryhra` in each document, then check:
 
