@@ -6,6 +6,8 @@ A Retrieval-Augmented Generation (RAG) backend where many organizations (tenants
 - **Permission-aware:** inside an org, a user only retrieves chunks their role and groups allow. The filter runs inside the vector query, before anything reaches the LLM, so nothing leaks through the prompt.
 - **Enforced in the database (Row-Level Security), not only in app code:** a missing `WHERE` clause in the API cannot leak data.
 
+> New to RAG or Row-Level Security? Start with the beginner guide: [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
+
 ## Stack
 
 | Piece | Choice |
